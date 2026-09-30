@@ -532,8 +532,11 @@ export async function trailAtSessionStart(
   try {
     const link = readLink(dir);
     if (!link) return null;
-    const installed = installedHookTimeout(dir, 'SessionStart');
-    const cap = deps.capMs ?? Math.min(TRAIL_CHECK_CAP_MS, Math.max(1000, (installed ?? CHILD_TIMEOUT_MS) - HOOK_OVERHEAD_MS));
+    const installed = installedHookTimeout(dir, 'SessionStart', 'session-start');
+    // `installed` is seconds since #283 (a legacy ms value passes through
+    // installedBudgetMs unchanged) — and the CHILD_TIMEOUT_MS fallback is
+    // already ms yet above LEGACY_MS_FLOOR, so it survives the same call.
+    const cap = deps.capMs ?? Math.min(TRAIL_CHECK_CAP_MS, Math.max(1000, installedBudgetMs(installed ?? CHILD_TIMEOUT_MS) - HOOK_OVERHEAD_MS));
     const ctl = new AbortController();
     const f = deps.fetchImpl ?? fetch;
     // Our signal replaces the per-request ones (5 and 15 s), which are all
