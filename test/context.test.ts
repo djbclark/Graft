@@ -527,6 +527,73 @@ test("ensureGitignored: GRAFT_NO_GITIGNORE=1 skips writing .gitignore", () => {
   }
 });
 
+// A git-ignored context dir needs no `.gitignore` entry, whichever file git reads the rule from.
+function gitInit(dir: string): void {
+  execFileSync("git", ["init", "-q"], { cwd: dir, stdio: "ignore" });
+}
+
+test("ensureGitignored: leaves .gitignore alone when .git/info/exclude already ignores the graph dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    writeFileSync(join(dir, ".git", "info", "exclude"), "/graft/\n");
+    writeFileSync(join(dir, ".gitignore"), "node_modules/\n");
+    ensureGitignored(dir, contextDirFor(dir));
+    assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), "node_modules/\n");
+    const fresh = mkdtempSync(join(tmpdir(), "ctxgi-"));
+    try {
+      gitInit(fresh);
+      writeFileSync(join(fresh, ".git", "info", "exclude"), "/graft/\n");
+      ensureGitignored(fresh, contextDirFor(fresh));
+      assert.equal(existsSync(join(fresh, ".gitignore")), false, "must not create .gitignore either");
+    } finally {
+      rmSync(fresh, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: leaves .gitignore alone when core.excludesFile already ignores the graph dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    const globalIgnore = join(dir, ".git", "global-ignore");
+    writeFileSync(globalIgnore, "graft/\n");
+    execFileSync("git", ["config", "core.excludesFile", globalIgnore], { cwd: dir, stdio: "ignore" });
+    ensureGitignored(dir, contextDirFor(dir));
+    assert.equal(existsSync(join(dir, ".gitignore")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: leaves .gitignore alone when a parent .gitignore already ignores the graph dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    writeFileSync(join(dir, ".gitignore"), "graft/\n");
+    const sub = join(dir, "pkg");
+    mkdirSync(sub);
+    ensureGitignored(sub, contextDirFor(sub));
+    assert.equal(existsSync(join(sub, ".gitignore")), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: still writes the entry in a git repo that does not ignore the graph dir", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    writeFileSync(join(dir, ".git", "info", "exclude"), "/something-else/\n");
+    ensureGitignored(dir, contextDirFor(dir));
+    assert.match(readFileSync(join(dir, ".gitignore"), "utf8"), /^\/graft\/$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("ensureSearchable: GRAFT_NO_IGNORE=1 skips writing .ignore", () => {
   const dir = mkdtempSync(join(tmpdir(), "ctxsearch-"));
   process.env.GRAFT_NO_IGNORE = "1";

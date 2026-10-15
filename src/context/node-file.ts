@@ -23,6 +23,7 @@
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { matter } from "../util/front-matter.js";
 import { contentHash, normalizeName } from "../util/id.js";
 import { relPosix, stripTrailingSlashes } from "../util/paths.js";
@@ -115,10 +116,12 @@ export function contextDirFor(root: string, override?: string): string {
  * Make sure the repo's root `.gitignore` ignores the graft output dir. The
  * graph is a local, regenerable cache (like `node_modules`), not a committed
  * artifact, so every `graft build` adds the entry itself the first time — the
- * user never has to think about it. No-ops when the entry is already present
- * or the dir lives outside `root` (a custom `--dir` elsewhere, which can't be
- * expressed as a repo-relative ignore). Best-effort: an unwritable `.gitignore`
- * must never abort a build, so write failures are swallowed.
+ * user never has to think about it. No-ops when the entry is already present,
+ * when git already ignores the dir by other means (`.git/info/exclude`, a parent
+ * `.gitignore`, `core.excludesFile`), or when the dir lives outside `root` (a
+ * custom `--dir` elsewhere, which can't be expressed as a repo-relative ignore).
+ * Best-effort: an unwritable `.gitignore` must never abort a build, so write
+ * failures are swallowed.
  */
 const GRAPH_CACHE_NOTE = "graft's local graph cache — regenerable, not committed (run `graft build`).";
 
@@ -146,9 +149,28 @@ export function ensureGitignored(root: string, contextDir: string, note = GRAPH_
     return t === entry || t === `${bare}/` || t === bare;
   });
   if (present) return;
+  // Not in `.gitignore` itself, but git may already ignore the dir through `.git/info/exclude`,
+  // a parent `.gitignore` or `core.excludesFile`. Then there is nothing to add, and appending
+  // would dirty the checkout again on every build for a user who keeps tooling noise out of
+  // the tracked `.gitignore` on purpose.
+  if (gitAlreadyIgnores(root, bare)) return;
   const gap = current === "" ? "" : current.endsWith("\n") ? "\n" : "\n\n";
   const block = `${gap}# ${note}\n${entry}\n`;
   try { writeFileSync(path, current + block); } catch { /* best-effort — build already succeeded */ }
+}
+
+/** True when `root` is a git work tree whose ignore rules (every source git reads: `.gitignore`
+ *  files, `.git/info/exclude`, `core.excludesFile`) already cover the directory `rel/`. Any
+ *  failure (git missing, not a repo, timeout) answers false, so the caller falls back to
+ *  writing the entry. The trailing slash makes git treat a not-yet-created path as a directory,
+ *  so dir-only patterns like `graft/` match. */
+function gitAlreadyIgnores(root: string, rel: string): boolean {
+  try {
+    const r = spawnSync("git", ["check-ignore", "-q", "--", `${rel}/`], {
+      cwd: root, stdio: "ignore", timeout: 5000, windowsHide: true,
+    });
+    return r.status === 0;
+  } catch { return false; }
 }
 
 /**
