@@ -159,15 +159,27 @@ export function ensureGitignored(root: string, contextDir: string, note = GRAPH_
   try { writeFileSync(path, current + block); } catch { /* best-effort — build already succeeded */ }
 }
 
+/** Variables that point git at a different repo than the one in `cwd` (a git hook exports
+ *  `GIT_DIR` and `GIT_INDEX_FILE`, a wrapper may export the rest). Left in the child's
+ *  environment they make `check-ignore` answer for that other repo. */
+const GIT_REPO_ENV = [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_NAMESPACE",
+];
+
 /** True when `root` is a git work tree whose ignore rules (every source git reads: `.gitignore`
  *  files, `.git/info/exclude`, `core.excludesFile`) already cover the directory `rel/`. Any
  *  failure (git missing, not a repo, timeout) answers false, so the caller falls back to
- *  writing the entry. The trailing slash makes git treat a not-yet-created path as a directory,
- *  so dir-only patterns like `graft/` match. */
+ *  writing the entry. The trailing slash makes git treat the path as a directory, so dir-only
+ *  patterns like `graft/` match. A negation rule (an allowlist `.gitignore` that re-includes
+ *  directories) can judge a not-yet-created path differently from an existing one, so callers
+ *  create the dir first. `core.fsmonitor` is off because it would run a command named by the
+ *  repo's own config. */
 function gitAlreadyIgnores(root: string, rel: string): boolean {
   try {
-    const r = spawnSync("git", ["check-ignore", "-q", "--", `${rel}/`], {
-      cwd: root, stdio: "ignore", timeout: 5000, windowsHide: true,
+    const env = { ...process.env };
+    for (const k of GIT_REPO_ENV) delete env[k];
+    const r = spawnSync("git", ["-c", "core.fsmonitor=false", "check-ignore", "-q", "--", `${rel}/`], {
+      cwd: root, env, stdio: "ignore", timeout: 5000, windowsHide: true,
     });
     return r.status === 0;
   } catch { return false; }

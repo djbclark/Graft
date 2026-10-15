@@ -2,10 +2,10 @@
  * End-to-end tests for the markdown-graph pipeline (`init` → `check`), driven by
  * offline test doubles so no LLM/network is needed.
  */
-import { test } from "node:test";
+import { test, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 import { buildContext } from "../src/context/build.js";
@@ -423,6 +423,31 @@ test("graft check: keyless build then code changes (wiring stale) exits 1", () =
   }
 });
 
+// The ensureGitignored tests ask real git whether a path is ignored, so they must not see the
+// developer's environment: a global excludes file, a TMPDIR inside a repo, GIT_DIR exported by
+// a hook, or GRAFT_NO_GITIGNORE would each change the answer. Pin all of it for every test
+// in this file and restore it afterwards.
+const ISOLATED_ENV = [
+  "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM",
+  "GIT_CEILING_DIRECTORIES", "XDG_CONFIG_HOME", "GRAFT_NO_GITIGNORE", "GRAFT_NO_IGNORE",
+];
+let savedEnv: Record<string, string | undefined> = {};
+beforeEach(() => {
+  savedEnv = Object.fromEntries(ISOLATED_ENV.map((k) => [k, process.env[k]]));
+  for (const k of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GRAFT_NO_GITIGNORE", "GRAFT_NO_IGNORE"]) delete process.env[k];
+  // Missing files read as empty config / no default excludes file.
+  process.env.GIT_CONFIG_GLOBAL = join(tmpdir(), "ctxgi-no-global-config");
+  process.env.XDG_CONFIG_HOME = join(tmpdir(), "ctxgi-no-xdg-config");
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
+  // Stop git's repo discovery above the temp root, so a scratch dir never finds an outer repo.
+  process.env.GIT_CEILING_DIRECTORIES = dirname(realpathSync(tmpdir()));
+});
+afterEach(() => {
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k]; else process.env[k] = v;
+  }
+});
+
 // ensureGitignored — every `graft build` self-ignores its regenerable graph dir.
 test("ensureGitignored: creates .gitignore with the graft/ entry when none exists", () => {
   const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
@@ -591,6 +616,22 @@ test("ensureGitignored: still writes the entry in a git repo that does not ignor
     assert.match(readFileSync(join(dir, ".gitignore"), "utf8"), /^\/graft\/$/m);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ensureGitignored: an inherited GIT_DIR does not make git answer for another repo", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  const other = mkdtempSync(join(tmpdir(), "ctxgi-"));
+  try {
+    gitInit(dir);
+    gitInit(other);
+    writeFileSync(join(other, ".git", "info", "exclude"), "/graft/\n");
+    process.env.GIT_DIR = join(other, ".git"); // what a git hook exports; restored by afterEach
+    ensureGitignored(dir, contextDirFor(dir));
+    assert.match(readFileSync(join(dir, ".gitignore"), "utf8"), /^\/graft\/$/m);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
   }
 });
 
